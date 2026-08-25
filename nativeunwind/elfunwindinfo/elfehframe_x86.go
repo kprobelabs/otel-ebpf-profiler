@@ -135,12 +135,8 @@ func (regs *vmRegs) getUnwindInfoX86() sdtypes.UnwindInfo {
 	}
 	info := sdtypes.UnwindInfo{}
 
-	// The Return Address (RA) is usually recoverable via an ABI standard RA=CFA-8.
-	// But some functions (like __vfork) use a register to store the RA.
 	raReg := getUnwinderRegX86(regs.ra.reg)
 	if raReg != support.UnwindRegInvalid && raReg != support.UnwindRegCfa {
-		info.Flags |= support.UnwindFlagRegisterRA
-		info.AuxBaseReg = raReg
 		if raReg != support.UnwindRegFp && raReg != support.UnwindRegSp {
 			info.Flags |= support.UnwindFlagLeafOnly
 		}
@@ -152,34 +148,32 @@ func (regs *vmRegs) getUnwindInfoX86() sdtypes.UnwindInfo {
 	}
 
 	// Determine unwind info for frame pointer
-	if info.Flags&support.UnwindFlagRegisterRA == 0 {
-		switch regs.fp.reg {
-		case regCFA:
-			// Check that RBP is between CFA and stack top
-			if regs.cfa.reg != x86RegRSP || (regs.fp.off < 0 && regs.fp.off >= -regs.cfa.off) {
-				info.AuxBaseReg = support.UnwindRegCfa
-				info.AuxParam = int32(regs.fp.off)
-			}
-		case regExprReg:
-			// expression: RBP+offrbp
-			if r, _, offrbp, _ := splitOff(regs.fp.off); uleb128(r) == x86RegRBP {
-				info.AuxBaseReg = support.UnwindRegFp
-				info.AuxParam = int32(offrbp)
-			}
+	switch regs.fp.reg {
+	case regCFA:
+		// Check that RBP is between CFA and stack top
+		if regs.cfa.reg != x86RegRSP || (regs.fp.off < 0 && regs.fp.off >= -regs.cfa.off) {
+			info.AuxBaseReg = support.UnwindRegCfa
+			info.AuxParam = int32(regs.fp.off)
+		}
+	case regExprReg:
+		// expression: RBP+offrbp
+		if r, _, offrbp, _ := splitOff(regs.fp.off); uleb128(r) == x86RegRBP {
+			info.AuxBaseReg = support.UnwindRegFp
+			info.AuxParam = int32(offrbp)
 		}
 	}
 
 	// Determine unwind info for stack pointer
 	switch regs.cfa.reg {
 	case x86RegRBP, x86RegRSP:
-		info.BaseReg = getUnwinderRegX86(regs.cfa.reg)
+		info.BaseReg |= getUnwinderRegX86(regs.cfa.reg)
 		info.Param = int32(regs.cfa.off)
 	case x86RegRAX, x86RegR9, x86RegR11, x86RegR15:
 		// openssl libcrypto has handwritten assembly that use these registers
 		// as the CFA directly. These function do not call other code that would
 		// trash the register, so allow these for libcrypto.
 		info.Flags |= support.UnwindFlagLeafOnly
-		info.BaseReg = getUnwinderRegX86(regs.cfa.reg)
+		info.BaseReg |= getUnwinderRegX86(regs.cfa.reg)
 		info.Param = int32(regs.cfa.off)
 	case regExprPLT:
 		info.Flags |= support.UnwindFlagCommand
@@ -192,13 +186,16 @@ func (regs *vmRegs) getUnwindInfoX86() sdtypes.UnwindInfo {
 				// GCC SSE vectorized functions
 				// OpenSSL assembly using SSE/AVX
 				info.Flags |= support.UnwindFlagDerefCfa
-				info.BaseReg = getUnwinderRegX86(uleb128(reg))
+				info.BaseReg |= getUnwinderRegX86(uleb128(reg))
 				info.Param = param
 			}
 		}
 	}
-	if info.Flags&support.UnwindFlagCommand == 0 && info.BaseReg == support.UnwindRegInvalid {
+	if info.Flags&support.UnwindFlagCommand == 0 && info.BaseReg&0xf == support.UnwindRegInvalid {
 		return sdtypes.UnwindInfoInvalid
+	}
+	if raReg != support.UnwindRegInvalid && raReg != support.UnwindRegCfa {
+		info.BaseReg |= uint8(raReg << 4)
 	}
 	return info
 }
