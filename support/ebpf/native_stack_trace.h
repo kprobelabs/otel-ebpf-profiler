@@ -288,7 +288,18 @@ unwind_one_frame(PerCPURecord *record, bool *stop, UNUSED bool *delegate_go)
       DEBUG_PRINT("signal frame");
       goto frame_ok;
     }
-    case UNWIND_COMMAND_STOP: *stop = true; return ERR_OK;
+    case UNWIND_COMMAND_STOP:
+      // Some runtimes (managed-to-native transitions) end their DWARF
+      // info here but leave a valid FP chain. Walk it instead of giving up.
+      if (state->fp != 0) {
+        u64 regs[2];
+        if (bpf_probe_read_user(regs, sizeof(regs), (void *)state->fp) == 0) {
+          unwinder_unwind_frame_pointer_regs(state, regs);
+          goto frame_ok;
+        }
+      }
+      *stop = true;
+      return ERR_OK;
     case UNWIND_COMMAND_FRAME_POINTER:
       if (!unwinder_unwind_frame_pointer(state)) {
         goto err_native_pc_read;
