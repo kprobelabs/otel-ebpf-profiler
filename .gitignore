@@ -14,3 +14,8 @@ cmd/otelcol-ebpf-profiler/*.go
 cmd/otelcol-ebpf-profiler/go.mod
 cmd/otelcol-ebpf-profiler/go.sum
 otelcol-ebpf-profiler
+
+# Skills are symlinked in from the operator machine.
+.claude/skills
+.claude/settings.json
+.claude/settings.local.json
