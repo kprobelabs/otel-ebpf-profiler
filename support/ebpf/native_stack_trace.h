@@ -222,6 +222,23 @@ unwind_calc_register_with_deref(UnwindState *state, u8 baseReg, s32 param, bool 
 // On x86_64, registers RIP (PC), RSP (SP), and RBP (FP) are available.
 //
 // This function resolves a "stack delta" command from from our internal maps.
+// stop_ends_managed_frame reports whether the STOP just decoded came out of a
+// managed runtime's own executable, which is the only place the frame pointer
+// is known to outlive the unwind info. The lookup is the one the next frame
+// makes anyway to pick an interpreter unwinder, so a process with no managed
+// runtime loaded never finds an entry.
+static EBPF_INLINE bool stop_ends_managed_frame(UnwindState *state)
+{
+  u64 section_id     = state->text_section_id;
+  OffsetRange *range = bpf_map_lookup_elem(&interpreter_offsets, &section_id);
+  if (!range) {
+    return false;
+  }
+
+  return range->program_index == PROG_UNWIND_DOTNET ||
+         range->program_index == PROG_UNWIND_DOTNET10;
+}
+
 // This stack delta refers to a rule on how to unwind the state. In the simple
 // case it just provides SP delta and potentially offset from where to recover
 // FP value. See unwind_calc_register[_with_deref]() on the expressions supported.
@@ -288,7 +305,18 @@ unwind_one_frame(PerCPURecord *record, bool *stop, UNUSED bool *delegate_go)
       DEBUG_PRINT("signal frame");
       goto frame_ok;
     }
-    case UNWIND_COMMAND_STOP: *stop = true; return ERR_OK;
+    case UNWIND_COMMAND_STOP:
+      // .NET ends its unwind info where JIT-compiled code entered the native
+      // runtime, which decodes to a stack root even though the caller is still
+      // reachable through the frame pointer. Walk it there, and only there:
+      // everywhere else a STOP is a real stack root, and walking past every one
+      // of them invents a caller for frames that have none.
+      if (state->fp != 0 && stop_ends_managed_frame(state) &&
+          unwinder_unwind_frame_pointer(state)) {
+        goto frame_ok;
+      }
+      *stop = true;
+      return ERR_OK;
     case UNWIND_COMMAND_FRAME_POINTER:
       if (!unwinder_unwind_frame_pointer(state)) {
         goto err_native_pc_read;
@@ -391,7 +419,18 @@ static EBPF_INLINE ErrorCode unwind_one_frame(PerCPURecord *record, bool *stop, 
       DEBUG_PRINT("signal frame");
       goto frame_ok;
     }
-    case UNWIND_COMMAND_STOP: *stop = true; return ERR_OK;
+    case UNWIND_COMMAND_STOP:
+      // .NET ends its unwind info where JIT-compiled code entered the native
+      // runtime, which decodes to a stack root even though the caller is still
+      // reachable through the frame pointer. Walk it there, and only there:
+      // everywhere else a STOP is a real stack root, and walking past every one
+      // of them invents a caller for frames that have none.
+      if (state->fp != 0 && stop_ends_managed_frame(state) &&
+          unwinder_unwind_frame_pointer(state)) {
+        goto frame_ok;
+      }
+      *stop = true;
+      return ERR_OK;
     case UNWIND_COMMAND_FRAME_POINTER:
       if (!unwinder_unwind_frame_pointer(state)) {
         goto err_native_pc_read;
